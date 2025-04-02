@@ -80,6 +80,12 @@ async function main() {
     });
   }
 
+  if (!logseqSettings.hasOwnProperty("preserveEmptyBlock")) {
+    logseq.updateSettings({
+      preserveEmptyBlock: true,
+    });
+  }
+
   if (
       typeof logseqSettings.pollingInterval === "undefined" ||
       logseqSettings.pollingInterval === null
@@ -215,6 +221,14 @@ function applySettingsSchema() {
       title: "Invert messages order",
     },
     {
+      key: "preserveEmptyBlock",
+      description:
+          "If enabled, new content will be added before the last block if it's empty. If disabled, the empty block will be removed before adding new content.",
+      type: "boolean",
+      default: true,
+      title: "Preserve empty block",
+    },
+    {
       key: "isDebug",
       description:
           "Debug mode. Usually you don't need this. Use it if you are developer or developers asks you to turn this on",
@@ -323,11 +337,106 @@ async function insertMessages(
           currentBlock = currentBlock.children[currentBlock.children.length - 1] as any;
         }
 
-        lastBlockUuid = currentBlock.uuid;
-        params.sibling = true;
+        // Check if the last block is empty
+        if (currentBlock.content === "") {
+          if (logseq.settings!.preserveEmptyBlock) {
+            // If preserveEmptyBlock is true, insert before the empty block
+            // We need to find the parent of the empty block to correctly insert before it
+
+            // Get parent's children
+            const findParentBlockWithEmptyChild = (block: any, emptyBlockUuid: string) => {
+              if (!block.children || block.children.length === 0) {
+                return null;
+              }
+
+              for (let i = 0; i < block.children.length; i++) {
+                const child = block.children[i];
+                if (child.uuid === emptyBlockUuid) {
+                  return { parentBlock: block, indexInParent: i };
+                }
+
+                const result = findParentBlockWithEmptyChild(child, emptyBlockUuid);
+                if (result) {
+                  return result;
+                }
+              }
+
+              return null;
+            };
+
+            const result = findParentBlockWithEmptyChild(inboxBlockTree, currentBlock.uuid);
+
+            if (result) {
+              const { parentBlock, indexInParent } = result;
+
+              // If it's the first child, insert as a child of parent but before the empty block
+              if (indexInParent === 0) {
+                lastBlockUuid = parentBlock.uuid;
+                params = { sibling: false, before: false };
+
+                // Insert each message
+                for (const block of blocks) {
+                  const newBlock = await logseq.Editor.insertBlock(
+                      lastBlockUuid,
+                      block.content,
+                      params
+                  );
+
+                  if (newBlock) {
+                    lastBlockUuid = newBlock.uuid;
+                    params.sibling = true;
+                  }
+                }
+
+                // Move the empty block to the end
+                await logseq.Editor.moveBlock(currentBlock.uuid, lastBlockUuid, { before: false, sibling: true });
+
+                return;
+              } else {
+                // Insert after the previous sibling
+                const previousSibling = parentBlock.children[indexInParent - 1];
+                lastBlockUuid = previousSibling.uuid;
+                params = { sibling: true, before: false };
+              }
+            }
+          } else {
+            // If preserveEmptyBlock is false, remove the empty block
+            await logseq.Editor.removeBlock(currentBlock.uuid);
+
+            // If this was the only child, revert to inserting as a child of the inbox block
+            if (inboxBlockTree.children.length === 1) {
+              lastBlockUuid = inboxBlock.uuid;
+              params.sibling = false;
+            } else {
+              // Get the previous sibling or parent, depending on the structure
+              const findLastNonEmptyBlock = (block: any) => {
+                if (!block.children || block.children.length === 0) {
+                  return block;
+                }
+
+                // Exclude the last child if it was the empty one we just removed
+                const childrenToConsider = block.children.slice(0, -1);
+
+                if (childrenToConsider.length === 0) {
+                  return block;
+                }
+
+                return findLastNonEmptyBlock(childrenToConsider[childrenToConsider.length - 1]);
+              };
+
+              const lastNonEmptyBlock = findLastNonEmptyBlock(inboxBlockTree);
+              lastBlockUuid = lastNonEmptyBlock.uuid;
+              params.sibling = lastNonEmptyBlock.uuid !== inboxBlock.uuid;
+            }
+          }
+        } else {
+          // Last block is not empty, use it as insertion point
+          lastBlockUuid = currentBlock.uuid;
+          params.sibling = true;
+        }
       }
 
-      // Insert each message one by one at the bottom
+      // Insert each message one by one
       for (const block of blocks) {
         const newBlock = await logseq.Editor.insertBlock(
             lastBlockUuid,
@@ -363,10 +472,77 @@ async function insertMessages(
       // Find the last block on the page
       const lastPageBlock = pageBlocksTree[pageBlocksTree.length - 1];
 
-      // Insert each message one by one at the bottom
+      // Check if the last block is empty
+      if (lastPageBlock.content === "") {
+        if (logseq.settings!.preserveEmptyBlock) {
+          // If preserveEmptyBlock is true, insert before the empty block
+          if (pageBlocksTree.length > 1) {
+            // If there are other blocks, insert after the second-to-last block
+            const secondToLastBlock = pageBlocksTree[pageBlocksTree.length - 2];
+
+            // Insert each message one by one
+            let lastInsertedBlockUuid = secondToLastBlock.uuid;
+            for (const block of blocks) {
+              const newBlock = await logseq.Editor.insertBlock(
+                  lastInsertedBlockUuid,
+                  block.content,
+                  { sibling: true, before: false }
+              );
+              if (newBlock) {
+                lastInsertedBlockUuid = newBlock.uuid;
+              }
+            }
+          } else {
+            // If it's the only block, insert at page level before the empty block
+            for (let i = messages.length - 1; i >= 0; i--) {
+              await logseq.Editor.insertBlock(
+                  todayJournalPageName,
+                  messages[i],
+                  { sibling: true, before: true }
+              );
+            }
+          }
+          return;
+        } else {
+          // If preserveEmptyBlock is false, remove the empty block
+          await logseq.Editor.removeBlock(lastPageBlock.uuid);
+
+          // If this was the only block on the page, insert at page level
+          if (pageBlocksTree.length === 1) {
+            for (const message of messages) {
+              await logseq.Editor.insertBlock(
+                  todayJournalPageName,
+                  message,
+                  { sibling: false }
+              );
+            }
+            return;
+          } else {
+            // Insert after the new last block
+            const newLastBlock = pageBlocksTree[pageBlocksTree.length - 2];
+
+            // Insert each message one by one
+            let lastInsertedBlockUuid = newLastBlock.uuid;
+            for (const block of blocks) {
+              const newBlock = await logseq.Editor.insertBlock(
+                  lastInsertedBlockUuid,
+                  block.content,
+                  { sibling: true, before: false }
+              );
+              if (newBlock) {
+                lastInsertedBlockUuid = newBlock.uuid;
+              }
+            }
+            return;
+          }
+        }
+      }
+
+      // Last block is not empty, use it as insertion point
       let lastBlockUuid = lastPageBlock.uuid;
       let params = { sibling: true, before: false };
 
+      // Insert each message one by one at the bottom
       for (const block of blocks) {
         const newBlock = await logseq.Editor.insertBlock(
             lastBlockUuid,
@@ -378,7 +554,6 @@ async function insertMessages(
         }
       }
 
-      // Skip the batch insertion
       return;
     } else {
       // For normal order (top insertion), use batch insertion
