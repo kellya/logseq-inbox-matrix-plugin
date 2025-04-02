@@ -299,14 +299,14 @@ async function insertMessages(
   const inboxBlock = await checkInbox(todayJournalPageName, inboxName);
   if (!inboxBlock) {
     isProcessing = false;
-    logseq.UI.showMsg("[Inbox Matrix] Cannot get inbox block", "error");
+    await logseq.UI.showMsg("[Inbox Matrix] Cannot get inbox block", "error");
     return;
   }
 
   const blocks = messages.map((message) => ({ content: message }));
   const params = {
     sibling: false,
-    before: true
+    before: !logseq.settings!.invertMessagesOrder // Set this based on inverted order right away
   };
 
   let targetBlock = inboxBlock.uuid;
