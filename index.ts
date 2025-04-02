@@ -57,25 +57,25 @@ async function main() {
   }
 
   if (!logseqSettings.hasOwnProperty("inboxName")) {
-    await logseq.updateSettings({
+    logseq.updateSettings({
       inboxName: "#inbox",
     });
   }
 
   if (!logseqSettings.hasOwnProperty("invertMessagesOrder")) {
-    await logseq.updateSettings({
+    logseq.updateSettings({
       invertMessagesOrder: false,
     });
   }
 
   if (!logseqSettings.hasOwnProperty("addTimestamp")) {
-    await logseq.updateSettings({
+    logseq.updateSettings({
       addTimestamp: false,
     });
   }
 
   if (!logseqSettings.hasOwnProperty("authorizedUsers")) {
-    await logseq.updateSettings({
+    logseq.updateSettings({
       authorizedUsers: [],
     });
   }
@@ -84,31 +84,31 @@ async function main() {
     typeof logseqSettings.pollingInterval === "undefined" ||
     logseqSettings.pollingInterval === null
   ) {
-    await logseq.updateSettings({
+    logseq.updateSettings({
       pollingInterval: 10, // Default 10 minutes instead of 60000 milliseconds
     });
   }
 
   if (!logseqSettings.hasOwnProperty("matrixHomeserver")) {
-    await logseq.updateSettings({
+    logseq.updateSettings({
       matrixHomeserver: "https://matrix.org",
     });
   }
 
   if (!logseqSettings.hasOwnProperty("matrixAccessToken")) {
-    await logseq.updateSettings({
+    logseq.updateSettings({
       matrixAccessToken: "",
     });
   }
 
   if (!logseqSettings.hasOwnProperty("matrixUserId")) {
-    await logseq.updateSettings({
+    logseq.updateSettings({
       matrixUserId: "",
     });
   }
   
   if (!logseqSettings.hasOwnProperty("matrixRoomId")) {
-    await logseq.updateSettings({
+    logseq.updateSettings({
       matrixRoomId: "",
     });
   }
@@ -274,9 +274,9 @@ async function process() {
     todayJournalPage.length <= 0 ||
     !todayJournalPage[0].name
   ) {
-    logseq.UI.showMsg(
-      "[Inbox Matrix] Cannot get today's journal page",
-      "error"
+    await logseq.UI.showMsg(
+        "[Inbox Matrix] Cannot get today's journal page",
+        "error"
     );
     isProcessing = false;
     return;
@@ -287,7 +287,7 @@ async function process() {
   
   await insertMessages(todayJournalPage[0].name, inboxName, messageTexts);
 
-  logseq.UI.showMsg("[Inbox Matrix] Messages added to inbox", "success");
+  await logseq.UI.showMsg("[Inbox Matrix] Messages added to inbox", "success");
   isProcessing = false;
 }
 
