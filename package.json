@@ -1,8 +1,8 @@
 {
-  "name": "logseq-inbox-telegram-plugin",
-  "version": "0.1.5",
-  "description": "A Logseq plugin that reads Telegram chat and pull messages to daily journal",
-  "author": "shady2k",
+  "name": "logseq-inbox-matrix-plugin",
+  "version": "0.1.0",
+  "description": "A Logseq plugin that reads Matrix chat messages from a room and pulls messages to daily journal",
+  "author": "kellya",
   "license": "MIT",
   "scripts": {
     "dev": "parcel ./index.html",
@@ -19,8 +19,9 @@
   },
   "logseq": {
     "main": "dist/index.html",
-    "id": "_stfhku0m9",
-    "title": "Inbox Telegram",
+    "id": "Upe5plS56WVb",
+    "title": "Inbox Matrix",
     "icon": "./icon.png"
   }
 }
+

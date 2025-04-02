@@ -7,41 +7,38 @@ let isProcessing = false;
 let isDebug = false;
 
 interface IPayload {
-  offset?: number;
+  from?: string; // Timeline token for pagination
 }
 
-interface IUpdate {
-  update_id: number;
-  message?: {
-    date: number;
-    text: string;
-    from: {
-      username: string;
-    };
-    chat: {
-      id: number;
-    }
-  },
-  channel_post?: {
-    date: number;
-    text: string;
-    chat: {
-      id: number;
+interface IMatrixEvent {
+  event_id: string;
+  room_id: string;
+  sender: string;
+  origin_server_ts: number;
+  content: {
+    msgtype: string;
+    body: string;
+  };
+  type: string;
+}
+
+interface IMatrixSync {
+  next_batch: string;
+  rooms: {
+    join: {
+      [key: string]: {
+        timeline: {
+          events: IMatrixEvent[];
+          prev_batch: string;
+        }
+      }
     }
   }
 }
 
 interface IMessagesList {
-  chatId: number;
+  roomId: string;
   text: string;
-}
-
-interface IGroup {
-  [key: string]: string[];
-}
-
-function log(message: any) {
-  if (isDebug) console.log(message);
 }
 
 /**
@@ -51,7 +48,7 @@ async function main() {
   const logseqSettings = logseq.settings;
 
   if (!logseqSettings) {
-    logseq.UI.showMsg("[Inbox Telegram] Cannot get settings", "error");
+    logseq.UI.showMsg("[Inbox Matrix] Cannot get settings", "error");
     return;
   }
 
@@ -88,30 +85,42 @@ async function main() {
     logseqSettings.pollingInterval === null
   ) {
     await logseq.updateSettings({
-      pollingInterval: 60000,
+      pollingInterval: 10, // Default 10 minutes instead of 60000 milliseconds
     });
   }
 
-  if (!logseq.settings!.inboxByChat) {
+  if (!logseqSettings.hasOwnProperty("matrixHomeserver")) {
     await logseq.updateSettings({
-      inboxByChat: [],
+      matrixHomeserver: "https://matrix.org",
     });
   }
 
-  if (!logseqSettings.hasOwnProperty("botToken")) {
+  if (!logseqSettings.hasOwnProperty("matrixAccessToken")) {
     await logseq.updateSettings({
-      botToken: "",
+      matrixAccessToken: "",
+    });
+  }
+
+  if (!logseqSettings.hasOwnProperty("matrixUserId")) {
+    await logseq.updateSettings({
+      matrixUserId: "",
+    });
+  }
+  
+  if (!logseqSettings.hasOwnProperty("matrixRoomId")) {
+    await logseq.updateSettings({
+      matrixRoomId: "",
     });
   }
 
   applySettingsSchema();
 
-  if (!logseqSettings.botToken) {
-    logseq.UI.showMsg("[Inbox Telegram] You should change plugin settings");
+  if (!logseqSettings.matrixAccessToken || !logseqSettings.matrixHomeserver || !logseqSettings.matrixUserId || !logseqSettings.matrixRoomId) {
+    logseq.UI.showMsg("[Inbox Matrix] You should complete plugin settings", "error");
     return;
   }
 
-  console.log("[Inbox Telegram] Started!");
+  console.log("[Inbox Matrix] Started!");
   setTimeout(() => {
     process();
   }, 3000);
@@ -124,19 +133,40 @@ async function main() {
 function applySettingsSchema() {
   const settings: SettingSchemaDesc[] = [
     {
-      key: "botToken",
-      description: "Telegram Bot token. In order to start you need to create Telegram bot: https://core.telegram.org/bots#3-how-do-i-create-a-bot. Create a bot with BotFather, which is essentially a bot used to create other bots. The command you need is /newbot. After you choose title, BotFaher give you the token",
+      key: "matrixHomeserver",
+      description: "Matrix homeserver URL (e.g., https://matrix.org)",
+      type: "string",
+      default: "https://matrix.org",
+      title: "Matrix Homeserver",
+    },
+    {
+      key: "matrixUserId",
+      description: "Your Matrix User ID (e.g., @username:matrix.org)",
       type: "string",
       default: "",
-      title: "Bot token",
+      title: "Matrix User ID",
+    },
+    {
+      key: "matrixAccessToken",
+      description: "Your Matrix access token. You can get it from your Matrix client settings or by using the Matrix login API.",
+      type: "string",
+      default: "",
+      title: "Matrix Access Token",
+    },
+    {
+      key: "matrixRoomId",
+      description: "The Matrix room ID to monitor for messages (e.g., !roomid:matrix.org)",
+      type: "string",
+      default: "",
+      title: "Matrix Room ID",
     },
     {
       key: "pollingInterval",
       description:
-        "This interval will be used to get new messages from Telegram bot",
+        "How often to check for new messages from Matrix (in minutes)",
       type: "number",
-      default: 600000,
-      title: "Polling interval (milliseconds)",
+      default: 10,
+      title: "Polling interval (minutes)",
     },
     {
       key: "inboxName",
@@ -149,24 +179,24 @@ function applySettingsSchema() {
     {
       key: "authorizedUsers",
       description:
-        "Be sure to add your username in authorizedUsers array, because your recently created bot is publicly findable and other peoples may send messages to your bot. For example \"authorizedUsers\": [\"your_username\"]. If you leave this array empty - all messages from all users will be processed!",
+        "List of Matrix user IDs that are allowed to send messages to this plugin. If empty, all messages from all users will be processed.",
       type: "object",
       default: [],
-      title: "authorizedUsers",
+      title: "Authorized Users",
     },
     {
       key: "useActiveGraph",
-      description: "If enabled, bot messages will be sent to the currently active graph",
+      description: "If enabled, Matrix messages will be sent to the currently active graph",
       type: "boolean",
       default: true,
       title: "Paste messages to currently active graph",
     },
     {
-      key: "botTargetGraph",
-      description: "Specify the graph where bot messages should be received, used only if useActiveGraph is false",
+      key: "matrixTargetGraph",
+      description: "Specify the graph where Matrix messages should be received, used only if useActiveGraph is false",
       type: "string",
       default: "",
-      title: "Bot Target Graph",
+      title: "Matrix Target Graph",
     },
     {
       key: "addTimestamp",
@@ -185,14 +215,6 @@ function applySettingsSchema() {
       title: "Invert messages order",
     },
     {
-      key: "inboxByChat",
-      description:
-        "Allows to set multiple inboxes, more information at https://github.com/shady2k/logseq-inbox-telegram-plugin#multiple-inboxes",
-      type: "object",
-      default: [],
-      title: "Allows to set multiple inboxes",
-    },
-    {
       key: "isDebug",
       description:
         "Debug mode. Usually you don't need this. Use it if you are developer or developers asks you to turn this on",
@@ -205,18 +227,20 @@ function applySettingsSchema() {
 }
 
 function startPolling() {
-  console.log("[Inbox Telegram] Polling started!");
-  setInterval(() => process(), logseq.settings!.pollingInterval);
+  console.log("[Inbox Matrix] Polling started!");
+  // Convert minutes to milliseconds when setting up the interval
+  const pollingIntervalMs = logseq.settings!.pollingInterval * 60 * 1000;
+  setInterval(() => process(), pollingIntervalMs);
 }
 
 async function process() {
   log("Processing");
 
   if (!logseq.settings!.useActiveGraph) {
-    const botTargetGraph = logseq.settings!.botTargetGraph;
+    const matrixTargetGraph = logseq.settings!.matrixTargetGraph;
     const currentGraph = await logseq.App.getCurrentGraph();
-    if (currentGraph?.name !== botTargetGraph) {
-      log(`Not in the bot target graph: ${botTargetGraph}, current graph: ${currentGraph?.name}, skipped`);
+    if (currentGraph?.name !== matrixTargetGraph) {
+      log(`Not in the Matrix target graph: ${matrixTargetGraph}, current graph: ${currentGraph?.name}, skipped`);
       return;
     }
   }
@@ -251,62 +275,20 @@ async function process() {
     !todayJournalPage[0].name
   ) {
     logseq.UI.showMsg(
-      "[Inbox Telegram] Cannot get today's journal page",
+      "[Inbox Matrix] Cannot get today's journal page",
       "error"
     );
     isProcessing = false;
     return;
   }
 
-  const defaultInboxName = logseq.settings!.inboxName || null;
-  const inboxByChat = logseq.settings!.inboxByChat;
+  const inboxName = logseq.settings!.inboxName || null;
+  const messageTexts = messages.map(item => item.text);
+  
+  await insertMessages(todayJournalPage[0].name, inboxName, messageTexts);
 
-  function getInboxByChatId(chatId: number): string {
-    if (!inboxByChat) return defaultInboxName;
-    const obj = inboxByChat.find(
-      (item: { chatId: number }) => item.chatId === chatId
-    );
-    if (obj && obj.inboxName && obj.inboxName !== "") {
-      return obj.inboxName;
-    } else {
-      return defaultInboxName;
-    }
-  }
-
-  const grouped = messages.reduce(
-    (groups, item) => ({
-      ...groups,
-      [getInboxByChatId(item.chatId)]: [
-        ...(groups[getInboxByChatId(item.chatId)] || []),
-        item.text,
-      ],
-    }),
-    {} as IGroup
-  );
-
-  Object.entries(grouped).forEach(async ([inboxName, messages]) => {
-    await insertMessages(todayJournalPage[0].name, inboxName, messages);
-  });
-
-  logseq.UI.showMsg("[Inbox Telegram] Messages added to inbox", "success");
-
-  const uniqueChats = [...new Set(messages.map((item) => item.chatId))];
-  const newInboxByChat = inboxByChat.slice();
-  uniqueChats.forEach(async (chatId) => {
-    const obj = inboxByChat.find(
-      (item: { chatId: number }) => item.chatId === chatId
-    );
-    if (!obj) {
-      newInboxByChat.push({
-        chatId,
-        inboxName: defaultInboxName,
-      });
-    }
-  });
-
-  await logseq.updateSettings({
-    inboxByChat: newInboxByChat,
-  });
+  logseq.UI.showMsg("[Inbox Matrix] Messages added to inbox", "success");
+  isProcessing = false;
 }
 
 async function insertMessages(
@@ -317,7 +299,7 @@ async function insertMessages(
   const inboxBlock = await checkInbox(todayJournalPageName, inboxName);
   if (!inboxBlock) {
     isProcessing = false;
-    logseq.UI.showMsg("[Inbox Telegram] Cannot get inbox block", "error");
+    logseq.UI.showMsg("[Inbox Matrix] Cannot get inbox block", "error");
     return;
   }
 
@@ -349,8 +331,6 @@ async function insertMessages(
 
   log({ inboxBlock, blocks, params });
   await logseq.Editor.insertBatchBlock(targetBlock, blocks, params);
-
-  isProcessing = false;
 }
 
 async function checkInbox(pageName: string, inboxName: string | null) {
@@ -410,108 +390,131 @@ async function getTodayJournal() {
 
 function getMessages(): Promise<IMessagesList[] | undefined> {
   return new Promise((resolve, reject) => {
-    let updateId: number;
     let messages: IMessagesList[] = [];
-    const botToken = logseq.settings!.botToken;
-
+    const matrixHomeserver = logseq.settings!.matrixHomeserver;
+    const matrixAccessToken = logseq.settings!.matrixAccessToken;
+    const matrixUserId = logseq.settings!.matrixUserId;
+    const matrixRoomId = logseq.settings!.matrixRoomId;
+    
+    // Build sync filter to only get text messages from the specific room
+    const filter = {
+      room: {
+        rooms: [matrixRoomId],
+        timeline: {
+          limit: 50,
+          types: ["m.room.message"]
+        }
+      }
+    };
+    
     const payload: IPayload = {
-      ...(logseq.settings!.updateId && {
-        offset: logseq.settings!.updateId + 1,
+      ...(logseq.settings!.syncToken && {
+        from: logseq.settings!.syncToken,
       }),
     };
 
-    axios
-      .post(`https://api.telegram.org/bot${botToken}/getUpdates`, payload)
-      .then(async function (response) {
-        if (response && response.data && response.data.ok) {
-          const resArr = response.data.result;
+    // Prepare sync URL with filter
+    const syncUrl = `${matrixHomeserver}/_matrix/client/r0/sync?timeout=30000&filter=${encodeURIComponent(JSON.stringify(filter))}`;
+    const headers = {
+      Authorization: `Bearer ${matrixAccessToken}`
+    };
 
-          resArr.forEach((element: IUpdate) => {
-            updateId = element.update_id;
-            if (
-              element.message &&
-              element.message.text &&
-              element.message.date &&
-              element.message.from.username
-            ) {
-              const authorizedUsers: string[] =
-                logseq.settings!.authorizedUsers;
-              if (authorizedUsers && authorizedUsers.length > 0) {
-                if (!authorizedUsers.includes(element.message.from.username)) {
-                  log({
-                    name: "Ignore messages, user not authorized",
-                    element,
-                  });
-                  return;
+    if (payload.from) {
+      const urlWithToken = `${syncUrl}&since=${encodeURIComponent(payload.from)}`;
+      axios.get(urlWithToken, { headers })
+        .then(processResponse)
+        .catch(handleError);
+    } else {
+      axios.get(syncUrl, { headers })
+        .then(processResponse)
+        .catch(handleError);
+    }
+
+    function processResponse(response: any) {
+      if (response && response.data) {
+        const data: IMatrixSync = response.data;
+        const nextBatch = data.next_batch;
+        
+        // Store the next_batch token for future syncs
+        logseq.updateSettings({
+          syncToken: nextBatch,
+        });
+        
+        // Process the specific room
+        if (data.rooms && data.rooms.join && data.rooms.join[matrixRoomId]) {
+          const room = data.rooms.join[matrixRoomId];
+          
+          if (room.timeline && room.timeline.events) {
+            room.timeline.events.forEach(event => {
+              // Only process text messages
+              if (
+                event.type === 'm.room.message' && 
+                event.content && 
+                event.content.msgtype === 'm.text' &&
+                event.content.body
+              ) {
+                const sender = event.sender;
+                
+                // Check if sender is authorized
+                const authorizedUsers: string[] = logseq.settings!.authorizedUsers;
+                if (authorizedUsers && authorizedUsers.length > 0) {
+                  if (!authorizedUsers.includes(sender)) {
+                    log({
+                      name: "Ignore message, user not authorized",
+                      sender,
+                      roomId: matrixRoomId
+                    });
+                    return;
+                  }
                 }
+                
+                const text = ((messageText: string, addTimestamp: boolean) => {
+                  if (addTimestamp) {
+                    return `${dayjs(event.origin_server_ts).format("HH:mm")} - ${messageText}`;
+                  } else {
+                    return messageText;
+                  }
+                })(event.content.body, logseq.settings!.addTimestamp);
+                
+                log({
+                  name: "Processing message",
+                  roomId: matrixRoomId,
+                  text,
+                  sender
+                });
+                
+                messages.push({
+                  roomId: matrixRoomId,
+                  text
+                });
               }
-
-              const text = ((telegramText: string, addTimestamp: boolean) => {
-                if (addTimestamp) {
-                  return `${dayjs
-                    .unix(element.message.date)
-                    .format("HH:mm")} - ${telegramText}`;
-                } else {
-                  return telegramText;
-                }
-              })(element.message.text, logseq.settings!.addTimestamp);
-
-              log({
-                name: "Push in group messages",
-                element: element.message.chat.id,
-                text,
-              });
-              messages.push({
-                chatId: element.message.chat.id,
-                text,
-              });
-            }
-
-            if (
-              element.channel_post &&
-              element.channel_post.text &&
-              element.channel_post.date
-            ) {
-              const text = ((telegramText: string, addTimestamp: boolean) => {
-                if (addTimestamp) {
-                  return `${dayjs
-                    .unix(element.channel_post.date)
-                    .format("HH:mm")} - ${telegramText}`;
-                } else {
-                  return telegramText;
-                }
-              })(element.channel_post.text, logseq.settings!.addTimestamp);
-
-              log({
-                name: "Push in channel messages",
-                element: element.channel_post.chat.id,
-                text,
-              });
-              messages.push({
-                chatId: element.channel_post.chat.id,
-                text,
-              });
-            }
-          });
-
-          await logseq.updateSettings({
-            updateId,
-          });
-
-          resolve(messages);
-        } else {
-          logseq.UI.showMsg(
-            "[Inbox Telegram] Unable to parse Telegram response",
-            "error"
-          );
-          reject();
+            });
+          }
         }
-      })
-      .catch(function (error) {
-        console.error(error);
-        reject(error);
-      });
+        
+        resolve(messages);
+      } else {
+        logseq.UI.showMsg(
+          "[Inbox Matrix] Unable to parse Matrix response",
+          "error"
+        );
+        reject();
+      }
+    }
+
+    function handleError(error: any) {
+      console.error("Matrix sync error:", error);
+      logseq.UI.showMsg(
+        `[Inbox Matrix] Error syncing with Matrix: ${error.message || "Unknown error"}`,
+        "error"
+      );
+      reject(error);
+    }
   });
+}
+
+function log(message: any) {
+  if (isDebug) console.log(message);
 }
 
 // bootstrap
