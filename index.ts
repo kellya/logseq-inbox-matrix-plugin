@@ -81,8 +81,8 @@ async function main() {
   }
 
   if (
-    typeof logseqSettings.pollingInterval === "undefined" ||
-    logseqSettings.pollingInterval === null
+      typeof logseqSettings.pollingInterval === "undefined" ||
+      logseqSettings.pollingInterval === null
   ) {
     logseq.updateSettings({
       pollingInterval: 10, // Default 10 minutes instead of 60000 milliseconds
@@ -106,7 +106,7 @@ async function main() {
       matrixUserId: "",
     });
   }
-  
+
   if (!logseqSettings.hasOwnProperty("matrixRoomId")) {
     logseq.updateSettings({
       matrixRoomId: "",
@@ -163,7 +163,7 @@ function applySettingsSchema() {
     {
       key: "pollingInterval",
       description:
-        "How often to check for new messages from Matrix (in minutes)",
+          "How often to check for new messages from Matrix (in minutes)",
       type: "number",
       default: 10,
       title: "Polling interval (minutes)",
@@ -171,7 +171,7 @@ function applySettingsSchema() {
     {
       key: "inboxName",
       description:
-        "Messages will be pasted in daily journal into block with text, specified in inboxName property. Replace it in case of necessary. If you don't want to group messages, set inboxName property to null. In this case messages will be inserted directly into page block",
+          "Messages will be pasted in daily journal into block with text, specified in inboxName property. Replace it in case of necessary. If you don't want to group messages, set inboxName property to null. In this case messages will be inserted directly into page block",
       type: "string",
       default: "#inbox",
       title: "Title in daily journal",
@@ -179,7 +179,7 @@ function applySettingsSchema() {
     {
       key: "authorizedUsers",
       description:
-        "List of Matrix user IDs that are allowed to send messages to this plugin. If empty, all messages from all users will be processed.",
+          "List of Matrix user IDs that are allowed to send messages to this plugin. If empty, all messages from all users will be processed.",
       type: "object",
       default: [],
       title: "Authorized Users",
@@ -201,7 +201,7 @@ function applySettingsSchema() {
     {
       key: "addTimestamp",
       description:
-        "If this set to true, message received time in format HH:mm will be added to message text, for example 21:13 - Test message",
+          "If this set to true, message received time in format HH:mm will be added to message text, for example 21:13 - Test message",
       type: "boolean",
       default: false,
       title: "Add timestamp",
@@ -209,7 +209,7 @@ function applySettingsSchema() {
     {
       key: "invertMessagesOrder",
       description:
-        "New messages adds to the top of node by default, this setting will inverse the order of added messages, new messages will be added to the bottom of node",
+          "New messages adds to the top of node by default, this setting will inverse the order of added messages, new messages will be added to the bottom of node",
       type: "boolean",
       default: false,
       title: "Invert messages order",
@@ -217,7 +217,7 @@ function applySettingsSchema() {
     {
       key: "isDebug",
       description:
-        "Debug mode. Usually you don't need this. Use it if you are developer or developers asks you to turn this on",
+          "Debug mode. Usually you don't need this. Use it if you are developer or developers asks you to turn this on",
       type: "boolean",
       default: false,
       title: "Debug mode",
@@ -270,9 +270,9 @@ async function process() {
 
   const todayJournalPage = await getTodayJournal();
   if (
-    !todayJournalPage ||
-    todayJournalPage.length <= 0 ||
-    !todayJournalPage[0].name
+      !todayJournalPage ||
+      todayJournalPage.length <= 0 ||
+      !todayJournalPage[0].name
   ) {
     await logseq.UI.showMsg(
         "[Inbox Matrix] Cannot get today's journal page",
@@ -284,7 +284,7 @@ async function process() {
 
   const inboxName = logseq.settings!.inboxName || null;
   const messageTexts = messages.map(item => item.text);
-  
+
   await insertMessages(todayJournalPage[0].name, inboxName, messageTexts);
 
   await logseq.UI.showMsg("[Inbox Matrix] Messages added to inbox", "success");
@@ -292,9 +292,9 @@ async function process() {
 }
 
 async function insertMessages(
-  todayJournalPageName: string,
-  inboxName: string | null,
-  messages: string[]
+    todayJournalPageName: string,
+    inboxName: string | null,
+    messages: string[]
 ) {
   const inboxBlock = await checkInbox(todayJournalPageName, inboxName);
   if (!inboxBlock) {
@@ -304,33 +304,94 @@ async function insertMessages(
   }
 
   const blocks = messages.map((message) => ({ content: message }));
-  const params = {
-    sibling: false,
-    before: !logseq.settings!.invertMessagesOrder // Set this based on inverted order right away
-  };
 
-  let targetBlock = inboxBlock.uuid;
- 
-  if (logseq.settings!.invertMessagesOrder) {
-    const inboxBlockTree = await logseq.Editor.getBlock(inboxBlock.uuid, { includeChildren: true });
-    if (inboxBlockTree && inboxBlockTree.children && inboxBlockTree?.children?.length > 0) {
-      const block = inboxBlockTree?.children[inboxBlockTree?.children?.length - 1] as BlockEntity
-      if (block && block.uuid) {
-        targetBlock = block.uuid
-        params.sibling = true
-      }
-    }
-  }
-
-  if (inboxName === null || inboxName === "null" || inboxName === "") {
-    params.sibling = true;
+  // If we're working with a named inbox (not null/empty)
+  if (inboxName !== null && inboxName !== "null" && inboxName !== "") {
     if (logseq.settings!.invertMessagesOrder) {
-      params.before = false
+      // For inverted order: Add each message individually to the bottom
+      const inboxBlockTree = await logseq.Editor.getBlock(inboxBlock.uuid, { includeChildren: true });
+
+      // Start with the inbox block itself if no children
+      let lastBlockUuid = inboxBlock.uuid;
+      let params = { sibling: false, before: false };
+
+      // If there are children, find the actual last child
+      if (inboxBlockTree && inboxBlockTree.children && inboxBlockTree.children.length > 0) {
+        // Get the deepest last block by traversing the tree
+        let currentBlock = inboxBlockTree;
+        while (currentBlock.children && currentBlock.children.length > 0) {
+          currentBlock = currentBlock.children[currentBlock.children.length - 1] as any;
+        }
+
+        lastBlockUuid = currentBlock.uuid;
+        params.sibling = true;
+      }
+
+      // Insert each message one by one at the bottom
+      for (const block of blocks) {
+        const newBlock = await logseq.Editor.insertBlock(
+            lastBlockUuid,
+            block.content,
+            params
+        );
+        // Update the lastBlockUuid to the newly inserted block
+        // so the next insertion goes after this one
+        if (newBlock) {
+          lastBlockUuid = newBlock.uuid;
+          params.sibling = true;
+        }
+      }
+
+      // Skip the batch insertion since we've already inserted blocks individually
+      return;
+    } else {
+      // For normal order (top insertion), use batch insertion
+      await logseq.Editor.insertBatchBlock(
+          inboxBlock.uuid,
+          blocks,
+          {
+            sibling: false,
+            before: true
+          }
+      );
+    }
+  } else {
+    // When inboxName is null/empty (page level insertion)
+    const pageBlocksTree = await logseq.Editor.getPageBlocksTree(todayJournalPageName);
+
+    if (logseq.settings!.invertMessagesOrder) {
+      // Find the last block on the page
+      const lastPageBlock = pageBlocksTree[pageBlocksTree.length - 1];
+
+      // Insert each message one by one at the bottom
+      let lastBlockUuid = lastPageBlock.uuid;
+      let params = { sibling: true, before: false };
+
+      for (const block of blocks) {
+        const newBlock = await logseq.Editor.insertBlock(
+            lastBlockUuid,
+            block.content,
+            params
+        );
+        if (newBlock) {
+          lastBlockUuid = newBlock.uuid;
+        }
+      }
+
+      // Skip the batch insertion
+      return;
+    } else {
+      // For normal order (top insertion), use batch insertion
+      await logseq.Editor.insertBatchBlock(
+          pageBlocksTree[0].uuid,
+          blocks,
+          {
+            sibling: true,
+            before: true
+          }
+      );
     }
   }
-
-  log({ inboxBlock, blocks, params });
-  await logseq.Editor.insertBatchBlock(targetBlock, blocks, params);
 }
 
 async function checkInbox(pageName: string, inboxName: string | null) {
@@ -349,12 +410,12 @@ async function checkInbox(pageName: string, inboxName: string | null) {
 
   if (!inboxBlock) {
     const newInboxBlock = await logseq.Editor.insertBlock(
-      pageBlocksTree[pageBlocksTree.length - 1].uuid,
-      inboxName,
-      {
-        before: pageBlocksTree[pageBlocksTree.length - 1].content ? false : true,
-        sibling: true
-      }
+        pageBlocksTree[pageBlocksTree.length - 1].uuid,
+        inboxName,
+        {
+          before: pageBlocksTree[pageBlocksTree.length - 1].content ? false : true,
+          sibling: true
+        }
     );
     return newInboxBlock;
   } else {
@@ -395,7 +456,7 @@ function getMessages(): Promise<IMessagesList[] | undefined> {
     const matrixAccessToken = logseq.settings!.matrixAccessToken;
     const matrixUserId = logseq.settings!.matrixUserId;
     const matrixRoomId = logseq.settings!.matrixRoomId;
-    
+
     // Build sync filter to only get text messages from the specific room
     const filter = {
       room: {
@@ -406,7 +467,7 @@ function getMessages(): Promise<IMessagesList[] | undefined> {
         }
       }
     };
-    
+
     const payload: IPayload = {
       ...(logseq.settings!.syncToken && {
         from: logseq.settings!.syncToken,
@@ -422,39 +483,39 @@ function getMessages(): Promise<IMessagesList[] | undefined> {
     if (payload.from) {
       const urlWithToken = `${syncUrl}&since=${encodeURIComponent(payload.from)}`;
       axios.get(urlWithToken, { headers })
-        .then(processResponse)
-        .catch(handleError);
+          .then(processResponse)
+          .catch(handleError);
     } else {
       axios.get(syncUrl, { headers })
-        .then(processResponse)
-        .catch(handleError);
+          .then(processResponse)
+          .catch(handleError);
     }
 
     function processResponse(response: any) {
       if (response && response.data) {
         const data: IMatrixSync = response.data;
         const nextBatch = data.next_batch;
-        
+
         // Store the next_batch token for future syncs
         logseq.updateSettings({
           syncToken: nextBatch,
         });
-        
+
         // Process the specific room
         if (data.rooms && data.rooms.join && data.rooms.join[matrixRoomId]) {
           const room = data.rooms.join[matrixRoomId];
-          
+
           if (room.timeline && room.timeline.events) {
             room.timeline.events.forEach(event => {
               // Only process text messages
               if (
-                event.type === 'm.room.message' && 
-                event.content && 
-                event.content.msgtype === 'm.text' &&
-                event.content.body
+                  event.type === 'm.room.message' &&
+                  event.content &&
+                  event.content.msgtype === 'm.text' &&
+                  event.content.body
               ) {
                 const sender = event.sender;
-                
+
                 // Check if sender is authorized
                 const authorizedUsers: string[] = logseq.settings!.authorizedUsers;
                 if (authorizedUsers && authorizedUsers.length > 0) {
@@ -467,7 +528,7 @@ function getMessages(): Promise<IMessagesList[] | undefined> {
                     return;
                   }
                 }
-                
+
                 const text = ((messageText: string, addTimestamp: boolean) => {
                   if (addTimestamp) {
                     return `${dayjs(event.origin_server_ts).format("HH:mm")} - ${messageText}`;
@@ -475,14 +536,14 @@ function getMessages(): Promise<IMessagesList[] | undefined> {
                     return messageText;
                   }
                 })(event.content.body, logseq.settings!.addTimestamp);
-                
+
                 log({
                   name: "Processing message",
                   roomId: matrixRoomId,
                   text,
                   sender
                 });
-                
+
                 messages.push({
                   roomId: matrixRoomId,
                   text
@@ -491,12 +552,12 @@ function getMessages(): Promise<IMessagesList[] | undefined> {
             });
           }
         }
-        
+
         resolve(messages);
       } else {
         logseq.UI.showMsg(
-          "[Inbox Matrix] Unable to parse Matrix response",
-          "error"
+            "[Inbox Matrix] Unable to parse Matrix response",
+            "error"
         );
         reject();
       }
@@ -505,8 +566,8 @@ function getMessages(): Promise<IMessagesList[] | undefined> {
     function handleError(error: any) {
       console.error("Matrix sync error:", error);
       logseq.UI.showMsg(
-        `[Inbox Matrix] Error syncing with Matrix: ${error.message || "Unknown error"}`,
-        "error"
+          `[Inbox Matrix] Error syncing with Matrix: ${error.message || "Unknown error"}`,
+          "error"
       );
       reject(error);
     }
