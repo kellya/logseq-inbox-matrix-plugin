@@ -5,6 +5,7 @@ import dayjs from "dayjs";
 
 let isProcessing = false;
 let isDebug = false;
+let isDBGraph = false;
 
 interface IPayload {
   from?: string; // Timeline token for pagination
@@ -42,6 +43,16 @@ interface IMessagesList {
 }
 
 /**
+ * Get block content/title based on graph type
+ */
+function getBlockContent(block: any): string {
+  if (isDBGraph) {
+    return block.title || block.content || "";
+  }
+  return block.content || block.title || "";
+}
+
+/**
  * main entry
  */
 async function main() {
@@ -50,6 +61,21 @@ async function main() {
   if (!logseqSettings) {
     logseq.UI.showMsg("[Inbox Matrix] Cannot get settings", "error");
     return;
+  }
+
+  // Detect if this is a DB graph
+  const graphInfo = await logseq.App.getCurrentGraph();
+  console.log("[Inbox Matrix Debug] Graph info:", graphInfo);
+  console.log("[Inbox Matrix Debug] graphInfo?.graphType:", graphInfo?.graphType);
+  console.log("[Inbox Matrix Debug] graphInfo?.name:", graphInfo?.name);
+  
+  // DB graphs typically have names starting with "logseq_db_" or url starting with "logseq_db_"
+  isDBGraph = graphInfo?.name?.startsWith('logseq_db_') || graphInfo?.url?.startsWith('logseq_db_') || graphInfo?.graphType === 'db';
+  
+  console.log(`[Inbox Matrix Debug] Detected graph type: ${isDBGraph ? 'DB' : 'File'}`);
+  
+  if (isDebug) {
+    console.log(`[Inbox Matrix] Graph type: ${isDBGraph ? 'DB' : 'File'}`);
   }
 
   if (logseqSettings.isDebug === true) {
@@ -282,14 +308,32 @@ async function process() {
     return;
   }
 
+  console.log(`[Inbox Matrix Debug] Processing ${messages.length} message(s)`);
+
   const todayJournalPage = await getTodayJournal();
-  if (
-      !todayJournalPage ||
-      todayJournalPage.length <= 0 ||
-      !todayJournalPage[0].name
-  ) {
+  
+  console.log(`[Inbox Matrix Debug] getTodayJournal returned:`, todayJournalPage);
+  console.log(`[Inbox Matrix Debug] todayJournalPage.length:`, todayJournalPage?.length);
+  console.log(`[Inbox Matrix Debug] todayJournalPage[0]:`, todayJournalPage?.[0]);
+  console.log(`[Inbox Matrix Debug] todayJournalPage[0] keys:`, todayJournalPage?.[0] ? Object.keys(todayJournalPage[0]) : "none");
+  
+  if (!todayJournalPage || todayJournalPage.length <= 0) {
     await logseq.UI.showMsg(
-        "[Inbox Matrix] Cannot get today's journal page",
+        "[Inbox Matrix] Cannot get today's journal page - empty result",
+        "error"
+    );
+    isProcessing = false;
+    return;
+  }
+  
+  // For DB graphs, use originalName or uuid as fallback
+  const pageName = todayJournalPage[0].name || todayJournalPage[0].originalName || todayJournalPage[0].uuid;
+  
+  console.log(`[Inbox Matrix Debug] Using page name/id:`, pageName);
+  
+  if (!pageName) {
+    await logseq.UI.showMsg(
+        "[Inbox Matrix] Cannot get today's journal page - no name/uuid",
         "error"
     );
     isProcessing = false;
@@ -299,7 +343,7 @@ async function process() {
   const inboxName = logseq.settings!.inboxName || null;
   const messageTexts = messages.map(item => item.text);
 
-  await insertMessages(todayJournalPage[0].name, inboxName, messageTexts);
+  await insertMessages(pageName, inboxName, messageTexts);
 
   await logseq.UI.showMsg("[Inbox Matrix] Messages added to inbox", "success");
   isProcessing = false;
@@ -338,13 +382,14 @@ async function insertMessages(
         }
 
         // Check if the last block is empty
-        if (currentBlock.content === "") {
+        const currentBlockContent = getBlockContent(currentBlock);
+        if (currentBlockContent === "") {
           if (logseq.settings!.preserveEmptyBlock) {
             // If preserveEmptyBlock is true, insert before the empty block
             // We need to find the parent of the empty block to correctly insert before it
 
             // Get parent's children
-            const findParentBlockWithEmptyChild = (block: any, emptyBlockUuid: string) => {
+            const findParentBlockWithEmptyChild = (block: any, emptyBlockUuid: string): any => {
               if (!block.children || block.children.length === 0) {
                 return null;
               }
@@ -409,7 +454,7 @@ async function insertMessages(
               params.sibling = false;
             } else {
               // Get the previous sibling or parent, depending on the structure
-              const findLastNonEmptyBlock = (block: any) => {
+              const findLastNonEmptyBlock = (block: any): any => {
                 if (!block.children || block.children.length === 0) {
                   return block;
                 }
@@ -467,13 +512,15 @@ async function insertMessages(
   } else {
     // When inboxName is null/empty (page level insertion)
     const pageBlocksTree = await logseq.Editor.getPageBlocksTree(todayJournalPageName);
+    console.log("[Inbox Matrix Debug] Page-level insertion. pageBlocksTree:", pageBlocksTree);
 
     if (logseq.settings!.invertMessagesOrder) {
       // Find the last block on the page
       const lastPageBlock = pageBlocksTree[pageBlocksTree.length - 1];
+      const lastPageBlockContent = getBlockContent(lastPageBlock);
 
       // Check if the last block is empty
-      if (lastPageBlock.content === "") {
+      if (lastPageBlockContent === "") {
         if (logseq.settings!.preserveEmptyBlock) {
           // If preserveEmptyBlock is true, insert before the empty block
           if (pageBlocksTree.length > 1) {
@@ -556,15 +603,27 @@ async function insertMessages(
 
       return;
     } else {
-      // For normal order (top insertion), use batch insertion
-      await logseq.Editor.insertBatchBlock(
-          pageBlocksTree[0].uuid,
-          blocks,
-          {
-            sibling: true,
-            before: true
-          }
-      );
+      // For normal order (top insertion), insert messages individually
+      console.log("[Inbox Matrix Debug] Inserting at top of page");
+      console.log("[Inbox Matrix Debug] First block:", pageBlocksTree[0]);
+      console.log("[Inbox Matrix Debug] First block uuid:", pageBlocksTree[0]?.uuid);
+      
+      if (!pageBlocksTree || pageBlocksTree.length === 0) {
+        // Empty page, append messages
+        for (const message of messages) {
+          await logseq.Editor.appendBlockInPage(todayJournalPageName, message);
+        }
+      } else {
+        // Insert before the first block
+        const firstBlockUuid = pageBlocksTree[0].uuid;
+        for (let i = messages.length - 1; i >= 0; i--) {
+          await logseq.Editor.insertBlock(
+              firstBlockUuid,
+              messages[i],
+              { sibling: true, before: true }
+          );
+        }
+      }
     }
   }
 }
@@ -572,56 +631,133 @@ async function insertMessages(
 async function checkInbox(pageName: string, inboxName: string | null) {
   log({ pageName, inboxName });
   const pageBlocksTree = await logseq.Editor.getPageBlocksTree(pageName);
+  console.log("[Inbox Matrix Debug] pageBlocksTree:", pageBlocksTree);
+  console.log("[Inbox Matrix Debug] pageBlocksTree.length:", pageBlocksTree?.length);
 
   if (inboxName === null || inboxName === "null" || inboxName === "") {
     log("No group");
+    // If page has no blocks, we need to create one first or return the page itself
+    if (!pageBlocksTree || pageBlocksTree.length === 0) {
+      console.log("[Inbox Matrix Debug] Page has no blocks, inserting first block");
+      // Insert a temporary block to have something to work with
+      const firstBlock = await logseq.Editor.appendBlockInPage(pageName, "");
+      console.log("[Inbox Matrix Debug] Created first block:", firstBlock);
+      return firstBlock;
+    }
     return pageBlocksTree[0];
   }
 
   let inboxBlock;
-  inboxBlock = pageBlocksTree.find((block: { content: string }) => {
-    return block.content === inboxName;
+  inboxBlock = pageBlocksTree.find((block: any) => {
+    return getBlockContent(block) === inboxName;
   });
 
   if (!inboxBlock) {
+    console.log("[Inbox Matrix Debug] Inbox block not found, creating it");
+    
+    if (!pageBlocksTree || pageBlocksTree.length === 0) {
+      // No blocks on page, append directly
+      const newInboxBlock = await logseq.Editor.appendBlockInPage(pageName, inboxName);
+      console.log("[Inbox Matrix Debug] Created inbox block on empty page:", newInboxBlock);
+      return newInboxBlock;
+    }
+    
+    const lastBlock = pageBlocksTree[pageBlocksTree.length - 1];
+    const lastBlockContent = getBlockContent(lastBlock);
+    
     const newInboxBlock = await logseq.Editor.insertBlock(
-        pageBlocksTree[pageBlocksTree.length - 1].uuid,
+        lastBlock.uuid,
         inboxName,
         {
-          before: pageBlocksTree[pageBlocksTree.length - 1].content ? false : true,
+          before: lastBlockContent ? false : true,
           sibling: true
         }
     );
+    console.log("[Inbox Matrix Debug] Created inbox block:", newInboxBlock);
     return newInboxBlock;
   } else {
+    console.log("[Inbox Matrix Debug] Found existing inbox block:", inboxBlock);
     return inboxBlock;
   }
 }
 
 async function getTodayJournal() {
+  console.log("[Inbox Matrix Debug] getTodayJournal called. isDBGraph=", isDBGraph);
+  
+  try {
+    // Try using the simpler API method first
+    const todayPage = await logseq.Editor.getPage("today");
+    console.log("[Inbox Matrix Debug] getPage('today') returned:", todayPage);
+    
+    if (todayPage) {
+      console.log("[Inbox Matrix Debug] Today page properties:", Object.keys(todayPage));
+      return [todayPage];
+    }
+  } catch (e) {
+    console.log("[Inbox Matrix Debug] 'today' alias failed:", e);
+  }
+
+  // Fallback to datascript query
   const d = new Date();
   const todayDateObj = {
     day: `${d.getDate()}`.padStart(2, "0"),
     month: `${d.getMonth() + 1}`.padStart(2, "0"),
     year: d.getFullYear(),
   };
-  const todayDate = `${todayDateObj.year}${todayDateObj.month}${todayDateObj.day}`;
+  const todayDate = parseInt(`${todayDateObj.year}${todayDateObj.month}${todayDateObj.day}`);
+  console.log("[Inbox Matrix Debug] Looking for journal day:", todayDate);
 
   let ret;
   try {
-    ret = await logseq.DB.datascriptQuery(`
-      [:find (pull ?p [*])
-       :where
-       [?b :block/page ?p]
-       [?p :block/journal? true]
-       [?p :block/journal-day ?d]
-       [(= ?d ${todayDate})]]
-    `);
+    if (isDBGraph) {
+      console.log("[Inbox Matrix Debug] Trying DB graph query");
+      // For DB graphs, query journal pages differently
+      ret = await logseq.DB.datascriptQuery(`
+        [:find (pull ?p [*])
+         :where
+         [?p :block/journal-day ?d]
+         [(= ?d ${todayDate})]]
+      `);
+    } else {
+      console.log("[Inbox Matrix Debug] Trying file graph query");
+      // For file graphs, use the old query
+      ret = await logseq.DB.datascriptQuery(`
+        [:find (pull ?p [*])
+         :where
+         [?p :block/journal? true]
+         [?p :block/journal-day ?d]
+         [(= ?d ${todayDate})]]
+      `);
+    }
+    
+    console.log("[Inbox Matrix Debug] Datascript query returned:", ret);
+    
+    if (ret && ret.length > 0) {
+      const flattened = ret.flat();
+      console.log("[Inbox Matrix Debug] Flattened result:", flattened);
+      console.log("[Inbox Matrix Debug] First page properties:", flattened[0] ? Object.keys(flattened[0]) : "none");
+      return flattened;
+    }
   } catch (e) {
-    console.error(e);
+    console.error("[Inbox Matrix Debug] Datascript query error:", e);
   }
 
-  return (ret || []).flat();
+  // Last resort: Try getting current page if it's a journal
+  try {
+    console.log("[Inbox Matrix Debug] Trying to get current page");
+    const currentPage = await logseq.Editor.getCurrentPage();
+    console.log("[Inbox Matrix Debug] Current page:", currentPage);
+    
+    if (currentPage && (currentPage['journal?'] || currentPage.journalDay === todayDate)) {
+      console.log("[Inbox Matrix Debug] Current page is today's journal");
+      return [currentPage];
+    }
+  } catch (e) {
+    console.error("[Inbox Matrix Debug] Get current page error:", e);
+  }
+
+  console.log("[Inbox Matrix Debug] All methods failed!");
+  return [];
 }
 
 function getMessages(): Promise<IMessagesList[] | undefined> {
